@@ -1,6 +1,11 @@
-//A sample main js file. Use this as a starting point for your app.
+//This as a starting point for the application.
 const app = new cot_app("Graffiti Exemption");
 const configURL = "//www1.toronto.ca/static_files/WebApps/CommonComponents/graffiti_exemption/JSONFeed.js";
+const geoURL = "//map.toronto.ca/geoservices/rest/search/rankedsearch";
+// example
+// "https://map.toronto.ca/geoservices/rest/search/rankedsearch?searchString=55%20john%20street&searchArea=1&matchType=1&projectionType=1&retRowLimit=10"
+
+const mailSend = false;
 let form, config, httpHost;
 //let upload_selector = 'admin_dropzone';
 
@@ -8,7 +13,6 @@ const form_id = "graffiti_exemption";
 let docDropzone;
 let imageDropzone;
 let cookie_SID = form_id + ".sid";
-
 let repo = "graffiti_exemption";
 
 $(document).ready(function () {
@@ -23,7 +27,7 @@ $(document).ready(function () {
     app.addForm(form, 'top');
     docDropzone = new Dropzone("div#document_dropzone", $.extend(config.admin.docDropzonePublic, {
       "dz_id": "document_dropzone", "fid": "", "form_id": form_id,
-      "url": config.api_public.upload + config.default_repo + '/' + repo,
+      "url": config.api_public.upload + config.default_repo + '/' + config.default_repo,
     }));
     imageDropzone = new Dropzone("div#image_dropzone", $.extend(config.admin.imageDropzonePublic, {
       "init": function () {
@@ -35,7 +39,7 @@ $(document).ready(function () {
           .on("error", function () { validateUpload("error", fieldname, ""); });
       },
       "dz_id": "image_dropzone", "fid": "", "form_id": form_id,
-      "url": config.api_public.upload + config.default_repo + '/' + repo,
+      "url": config.api_public.upload + config.default_repo + '/' + config.default_repo,
     }));
     initForm();
   }
@@ -65,7 +69,7 @@ $(document).ready(function () {
       title: app.data["Form Title"],
       useBinding: false,
       rootPath: config.httpHost.rootPath_public[httpHost],
-      sections: $.merge(getSubmissionSections(), getAdminSectionsBottom()),
+      sections: getSubmissionSections(),
       success: function () {
       }
     });
@@ -91,12 +95,52 @@ function initForm() {
   $("#lsteStatus").val("New");
   $("#closebtn").click(function () { window.close(); });
   $("#printbtn").click(function () { window.print(); });
+  $("#setbtn").click(function () {
+    $("#emAddress").val($("#eAddress").val());
+    $("#emCity").val($("#eCity").val());
+    $("#emPostalCode").val($("#ePostalCode").val());
+    $("#emPrimaryPhone").val($("#ePrimaryPhone").val());
+  });
+  $("#geobtn").click(function () { setGeoParams(); })
+
+  $("#makePDFbtn").click(function () {
+    console.log("pdf sample");
+ var docDefinition = { content: 'This is an sample PDF printed with pdfMake' };
+  // open the PDF in a new window
+  var docDefinition = {
+   content: [
+     // if you don't need styles, you can use a simple string to define a paragraph
+     'This is a standard paragraph, using default style',
+
+     // using a { text: '...' } object lets you set styling properties
+     { text: 'This paragraph will have a bigger font', fontSize: 15 },
+
+     // if you set pass an array instead of a string, you'll be able
+     // to style any fragment individually
+     {
+       text: [
+         'This paragraph is defined as an array of elements to make it possible to ',
+         { text: 'restyle part of it and make it bigger ', fontSize: 15 },
+         'than the rest.'
+       ]
+     }
+   ]
+ };
+ pdfMake.createPdf(docDefinition).open();
+
+ // print the PDF
+ pdfMake.createPdf(docDefinition).print();
+
+ // download the PDF
+ pdfMake.createPdf(docDefinition).download('optionalName.pdf');
+  })
+
   $("#savebtn").click(function () {
     let form_fv = $('#' + form_id).data('formValidation');
     form_fv.validate();
     if (form_fv.isValid()) { submitForm() }
   });
-  $('#eNotice').on('click', function () { $('#' + form_id).formValidation('revalidateField', $('#ComplianceDate')); });
+  $('#eNotice').on('change', function () { $('#' + form_id).formValidation('revalidateField', $('#ComplianceDate')); });
   $('#eMaintenance').on('change', function () { $('#' + form_id).formValidation('revalidateField', $('#eMaintenanceAgreement')); });
   $(".dz-hidden-input").attr("aria-hidden", "true");
   $(".dz-hidden-input").attr("aria-label", "File Upload Control");
@@ -106,12 +150,14 @@ function initForm() {
 }
 function submitForm() {
   //  $("#savebtn").prop('disabled', true);
+  setGeoParams();
+
   let payload = form.getData();
-  payload.doc_uploads = processUploads(docDropzone, repo, false);
-  payload.image_uploads = processUploads(imageDropzone, repo, false);
+  payload.doc_uploads = processUploads(docDropzone, config.default_repo, false);
+  payload.image_uploads = processUploads(imageDropzone, config.default_repo, false);
 
   $.ajax({
-    url: config.httpHost.app_public[httpHost] + config.api_public.post + repo + '?sid=' + getCookie(cookie_SID),
+    url: config.httpHost.app_public[httpHost] + config.api_public.post + config.default_repo + '?sid=' + getCookie(cookie_SID),
     type: 'POST',
     data: JSON.stringify(payload),
     headers: {
@@ -123,6 +169,9 @@ function submitForm() {
       if ((data.EventMessageResponse.Response.StatusCode) == 200) {
         $('#app-content-top').html(config.messages.submit.done);
         //    $('#app-content-bottom').html(app.data["Success Message"]);
+        if (mailSend) {
+          emailNotice(data.EventMessageResponse.Event.EventID, 'notify');
+        }
       }
     },
     error: function () {
@@ -132,56 +181,58 @@ function submitForm() {
     // notify code section
     if (data && data.EventMessageResponse && data.EventMessageResponse.Event && data.EventMessageResponse.Event.EventID) {
       // Email report notice to emergency management captain and incident manager/reporters
-      emailNotice(data.EventMessageResponse.Event.EventID, 'notify', ['captain']);
-    } else {
-      hasher.setHash('new?alert=danger&msg=' + msg.fail + '&ts=' + new Date().getTime());
+
+      // } else {
+      //   hasher.setHash('new?alert=danger&msg=' + msg.fail + '&ts=' + new Date().getTime());
     }
   });
 }
-function emailNotice(fid, action, recipients) {
-  var emailCaptain = "'Ozlem Kuscu': 'ozlem.kuscu@toronto.ca'";//config.captain;
+function emailNotice(fid, action) {
+  let emailTo = {};
+  let emailCaptain = config.captain_emails;
+  let emailAdmin = config.admin_emails;
   if (typeof emailCaptain !== 'undefined' && emailCaptain != "") {
-    var emailTo = config.captain;
-    var emailRecipients = $.map(emailTo, function (email) {
-      return email;
-    }).filter(function (itm, i, a) {
-      return i === a.indexOf(itm);
-    }).join(',');
-
-    console.log('------------' + emailRecipients, fid);
-
-    var payload = JSON.stringify({
-      'email': emailRecipients,
-      'id': fid,
-      'status': action,
-      'home': 'temp'
-    });
-
-    /*$.ajax({
-      url: config.api.email,
-      type: 'POST',
-      data: payload,
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8;',
-        'Cache-Control': 'no-cache'
-      },
-      dataType: 'json'
-    }).done(function (data, textStatus, jqXHR) {
-      console.log("Email notification sent");
-
-      if (action === 'notify') {
-        hasher.setHash(fid + '?alert=success&msg=notify.done&ts=' + new Date().getTime());
-      }
-    }).fail(function (jqXHR, textStatus, error) {
-      console.log("POST Request Failed: " + textStatus + ", " + error);
-
-      if (action === 'notify') {
-        hasher.setHash(fid + '?alert=danger&msg=notify.fail&ts=' + new Date().getTime());
-      }
-    });*/
+    $.extend(emailTo, emailCaptain);
   }
-}
+  if (typeof emailAdmin !== 'undefined' && emailAdmin != "") {
+    //  $.extend(emailTo, emailAdmin);
+  }
 
+  var emailRecipients = $.map(emailTo, function (email) {
+    return email;
+  }).filter(function (itm, i, a) {
+    return i === a.indexOf(itm);
+  }).join(',');
+
+  var payload = JSON.stringify({
+    'emailTo': emailRecipients,
+    'emailFrom': (config.messages.notify.emailFrom ? config.messages.notify.emailFrom : 'wmDev@toronto.ca'),
+    'id': fid,
+    'status': action,
+    'body': (config.messages.notify.emailBody ? config.messages.notify.emailBody : 'New submission has been received.'),
+    'emailSubject': (config.messages.notify.emailSubject ? config.messages.notify.emailSubject : 'New submission')
+  });
+
+  $.ajax({
+    url: config.httpHost.app[httpHost] + config.api.email,
+    type: 'POST',
+    data: payload,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8;',
+      'Cache-Control': 'no-cache'
+    },
+    dataType: 'json'
+  }).done(function (data, textStatus, jqXHR) {
+    if (action === 'notify') {
+      hasher.setHash(fid + '?alert=success&msg=notify.done&ts=' + new Date().getTime());
+    }
+  }).fail(function (jqXHR, textStatus, error) {
+    console.log("POST Request Failed: " + textStatus + ", " + error);
+    if (action === 'notify') {
+      hasher.setHash(fid + '?alert=danger&msg=notify.fail&ts=' + new Date().getTime());
+    }
+  });
+}
 function processUploads(DZ, repo, sync) {
   let uploadFiles = DZ.existingUploads ? DZ.existingUploads : new Array;
   let _files = DZ.getFilesWithStatus(Dropzone.SUCCESS);
@@ -230,6 +281,16 @@ function getSubmissionSections() {
         {
           fields: [
             {
+              "id": "makePDF",
+              "title": "",
+              type: "html",
+              html: `<div className="col-xs-12 col-md-12"><button class="btn btn-info" id="makePDFbtn"><span class="" aria-hidden="true"></span> ` + "Make PDF" + `</button></div>`
+            }
+          ]
+        },
+        {
+          fields: [
+            {
               "id": "eFirstName", "title": app.data["First Name"], "className": "col-xs-12 col-md-6",
               "required": true
             },
@@ -267,10 +328,15 @@ function getSubmissionSections() {
             {
               "id": "emSameAddress",
               "title": "",
-              "type": "checkbox",
-              "choices": config.sameAsAbove.choices,
-              "class": "col-xs-12 col-md-12"
-            },
+              type: "html",
+              html: `<div className="col-xs-12 col-md-12"><button class="btn btn-info" id="setbtn"><span class="" aria-hidden="true"></span> ` + app.data["Same As Above"] + `</button> 
+              <!--button class="btn btn-info" id="geobtn"><span class="" aria-hidden="true"></span> ` + "Set Geo Values" + `</button-->
+              </div>`
+            }
+          ]
+        },
+        {
+          fields: [
             {
               "id": "emAddress", "title": app.data["Address"],
               //  "required": true, 
@@ -305,77 +371,102 @@ function getSubmissionSections() {
           fields: [
             {
               "id": "ePermission", "title": app.data["permission"], "type": "radio", "className": "col-xs-12 col-md-6", "choices": config.choices.yesNoFull, "orientation": "horizontal",
-              //  "required": true              
+              "validators": {
+                callback: {
+                  message: app.data["permissionValidation"],
+                  callback: function (value, validator, $field) {
+                    return ($field[0].checked);
+                  }
+                }
+              }
             }]
         },
         {
           fields: [
             {
-              "id": "eNotice",
-              "title": app.data["notice"],
+              "id": "eNotice", "title": app.data["notice"], "type": "dropdown", "value": "No", "className": "col-xs-12 col-md-6", "choices": config.choices.yesNoFull, "orientation": "horizontal",
               //  "required": true,
-              //  "type": "radio",
-              "type": "dropdown",
-              "value": "No",
-              "className": "col-xs-12 col-md-6",
-              "choices": config.choices.yesNoFull,
-              "orientation": "horizontal"
-            }, {
-              "id": "ComplianceDate",
-              "title": app.data["compliance"],
-              //  "required": true,
-              "type": "datetimepicker",
-              "placeholder": config.dateFormat,
-              "className": "col-xs-12 col-md-6",
-              "options": { format: config.dateFormat },
               "validators": {
                 callback: {
-                  message: app.data["complianceValidation"] + ' is required',
-                  // this is added to formValidation
+                  message: app.data["noticeValidation"],
                   callback: function (value, validator, $field) {
-                    var checkVal = $("#eNotice").val();
-                    return (checkVal !== "Yes") ? true : (value !== '');
+                    console.log(value);
+                    return ((value == "") ? false : true);
                   }
                 }
               }
             }, {
-              "id": "eMaintenance",
-              "title": app.data["maintenance"],
-              //  "required": true,
-              //  "type": "radio",
-              "type": "dropdown",
-              "value": "No",
-              "className": "col-xs-12 col-md-6",
-              "choices": config.choices.yesNoFull,
-              "orientation": "horizontal"
-            },
-            {
-              "id": "eMaintenanceAgreement", "title": app.data["agreementDetails"],
-              //  "required": true, 
-              "className": "col-xs-12 col-md-12",
+              "id": "ComplianceDate", "title": app.data["compliance"], "type": "datetimepicker", "placeholder": config.dateFormat, "className": "col-xs-12 col-md-6", "options": { format: config.dateFormat },
               "validators": {
                 callback: {
-                  //  message: app.data["agreementDetails"] + ' is required',
-                  message: app.data["agreementDetailsValidation"] + ' is required',
+                  message: app.data["complianceValidation"],
+                  // this is added to formValidation
+                  callback: function (value, validator, $field) {
+                    var checkVal = $("#eNotice").val();
+                    return ((checkVal !== "Yes") ? true : (value !== ''));
+                  }
+                }
+              }
+            }, {
+              "id": "eMaintenance", "title": app.data["maintenance"], "type": "dropdown", "value": "No", "className": "col-xs-12 col-md-6", "choices": config.choices.yesNoFull, "orientation": "horizontal",
+              //  "type": "radio",
+              "validators": {
+                callback: {
+                  message: app.data["maintenanceValidation"],
+                  callback: function (value, validator, $field) {
+                    return ((value == "") ? false : true);
+                  }
+                }
+              }
+            },
+            {
+              "id": "eMaintenanceAgreement", "title": app.data["agreementDetails"], "className": "col-xs-12 col-md-12",
+              "validators": {
+                callback: {
+                  message: app.data["agreementDetailsValidation"],
                   // this is added to formValidation
                   callback: function (value, validator, $field) {
                     var checkVal = $("#eMaintenance").val();
-                    return (checkVal !== "Yes") ? true : (value !== '');
+                    return ((checkVal !== "Yes") ? true : (value !== ''));
                   }
                 }
               }
             },
             {
               "id": "eArtistInfo", "title": app.data["artistDetails"], "className": "col-xs-12 col-md-12",
-              //  "required": true
+              //  "required":true,
+              "validators": {
+                callback: {
+                  message: app.data["artistDetailsValidation"],
+                  callback: function (value, validator, $field) {
+                    return ((value == "") ? false : true);
+                  }
+                }
+              }
             },
             {
               "id": "eArtSurfaceEnhance", "title": app.data["enhance"], "className": "col-xs-12 col-md-12",
-              //  "required": true
+              //  "required":true,
+              "validators": {
+                callback: {
+                  message: app.data["enhanceValidation"],
+                  callback: function (value, validator, $field) {
+                    return ((value == "") ? false : true);
+                  }
+                }
+              }
             },
             {
               "id": "eArtLocalCharacter", "title": app.data["adhere"], "className": "col-xs-12 col-md-12",
-              //  "required": true
+              //  "required":true,
+              "validators": {
+                callback: {
+                  message: app.data["adhereValidation"],
+                  callback: function (value, validator, $field) {
+                    return ((value == "") ? false : true);
+                  }
+                }
+              }
             },
             { "id": "eAdditionalComments", "title": app.data["comments"], "className": "col-xs-12 col-md-12" },
           ]
@@ -399,32 +490,17 @@ function getSubmissionSections() {
             },
             { "id": "DeclarationText", "title": "", "type": "html", "html": app.data["DeclarationText"], "className": "col-xs-12 col-md-12" },
             {
-              id: "actionBar",
-              type: "html",
-              html: `<div className="col-xs-12 col-md-12"><button class="btn btn-success" id="savebtn"><span class="glyphicon glyphicon-send" aria-hidden="true"></span> ` + config.button.submitReport + `</button>
+              "id": "actionBar",
+              "type": "html",
+              "html": `<div className="col-xs-12 col-md-12"><button class="btn btn-success" id="savebtn"><span class="glyphicon glyphicon-send" aria-hidden="true"></span> ` + config.button.submitReport + `</button>
                  <button class="btn btn-success" id="printbtn"><span class="glyphicon glyphicon-print" aria-hidden="true"></span>Print</button></div>`
             },
             {
-              id: "successFailRow",
-              type: "html",
-              className: "col-xs-12 col-md-12",
-              html: `<div id="successFailArea" className="col-xs-12 col-md-12"></div>`
-            }]
-        }
-      ]
-    }
-  ]
-  return section;
-}
-function getAdminSectionsBottom() {
-  let section = [
-    {
-      id: "hiddenSec",
-      title: "",
-      className: "panel-info",
-      rows: [
-        {
-          fields: [
+              "id": "successFailRow",
+              "type": "html",
+              "className": "col-xs-12 col-md-12",
+              "html": `<div id="successFailArea" className="col-xs-12 col-md-12"></div>`
+            },
             {
               "id": "fid",
               "type": "html",
@@ -456,6 +532,16 @@ function getAdminSectionsBottom() {
               "html": "<input type=\"hidden\" aria-label=\"Address Geo ID\" aria-hidden=\"true\" id=\"AddressGeoID\" name=\"AddressGeoID\">",
               "class": "hidden"
             }, {
+              "id": "AddressLongitude",
+              "type": "html",
+              "html": "<input type=\"hidden\" aria-label=\"Address Longitude\" aria-hidden=\"true\" id=\"AddressLongitude\" name=\"AddressLongitude\">",
+              "class": "hidden"
+            }, {
+              "id": "AddressLatitude",
+              "type": "html",
+              "html": "<input type=\"hidden\" aria-label=\"Address Latitude\" aria-hidden=\"true\" id=\"AddressLatitude\" name=\"AddressLatitude\">",
+              "class": "hidden"
+            }, {
               "id": "MapAddress",
               "type": "html",
               "html": "<input type=\"hidden\" aria-label=\"Map Address\" aria-hidden=\"true\" id=\"MapAddress\" name=\"MapAddress\">",
@@ -466,12 +552,86 @@ function getAdminSectionsBottom() {
               "html": "<input type=\"hidden\" aria-label=\"Show Map\" aria-hidden=\"true\" id=\"ShowMap\" name=\"ShowMap\">",
               "class": "hidden"
             }]
-
         }
       ]
     }
   ]
   return section;
 }
+function getAdminSectionsBottom() {
+  let section = [
+    {
+      id: "hiddenSec",
+      title: "",
+      className: "panel-info",
+      rows: [{ fields: [] }]
+    }]
+  return section;
+}
+function setGeoParams() {
+  let queryStr = encodeURIComponent($("#emAddress").val() + " " + $("#emCity").val() + " " + $("#emPostalCode").val());
+  queryStr = "?searchString=" + queryStr + "&searchArea=1&matchType=1&projectionType=1&retRowLimit=10";
+  //setGeoParams
+  $.ajax({
+    url: geoURL + queryStr, // geoURL,
+    type: "GET",
+    cache: "true",
+    dataType: "json",
+    async: false,
+    success: function (data) {
+      let resultLoc = data.result.bestResult;
+      if (resultLoc.length > 0) {
+        $("#AddressGeoID").val(resultLoc[0]["geoId"]);
+        $("#AddressLongitude").val(resultLoc[0]["longitude"]);
+        $("#AddressLatitude").val(resultLoc[0]["latitude"]);
+      } else {
+        $("#AddressGeoID").val("");
+        $("#AddressLongitude").val("");
+        $("#AddressLatitude").val("");
+      }
+      //  console.log(resultLoc.length > 0 ? resultLoc[0]["geoId"] : "");
+    },
+    error: function () {
+      //  alert("Error: The application was unable to load data.")
+      $("#AddressGeoID").val("");
+      $("#AddressLongitude").val("");
+      $("#AddressLatitude").val("");
+    }
+  })
+}
+CotForm.prototype.getData = function () {
+  var data = {}, blanks = {}, rowIndexMap = {}; // {stringIndex: intIndex}
+  $.each($('#' + this.cotForm.id).serializeArray(), function (i, o) {
+    if (o.name.indexOf('row[') !== -1) {
+      var sRowIndex = o.name.substring(o.name.indexOf('[') + 1, o.name.indexOf(']'));
+      if (sRowIndex !== 'template') {
+        var rows = data['rows'] || [];
+        var iRowIndex = rowIndexMap[sRowIndex];
+        if (iRowIndex === undefined) {
+          rows.push({});
+          iRowIndex = rows.length - 1;
+          rowIndexMap[sRowIndex] = iRowIndex;
+        }
+        rows[iRowIndex][o.name.split('.')[1]] = o.value;
+        data['rows'] = rows;
+      }
+    } else {
+      if (data.hasOwnProperty(o.name)) {
+        data[o.name] = $.makeArray(data[o.name]);
+        data[o.name].push(o.value);
+      } else {
+        data[o.name] = o.value;
+      }
+    }
+  });
+
+  var _blanks = $('#' + this.cotForm.id + ' [name]')
+  $.each(_blanks, function () {
+    if (!data.hasOwnProperty(this.name)) {
+      blanks[this.name] = '';
+    }
+  });
+  return $.extend(data, blanks);
+};
 
 
